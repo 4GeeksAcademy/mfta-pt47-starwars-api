@@ -19,6 +19,7 @@ gunicorn = "*"
 flask-admin = "==1.6.1"
 wtforms = "==3.0.1"
 eralchemy2 = "*"
+flask-jwt-extended = "*"
 
 [requires]
 python_version = "3.13"

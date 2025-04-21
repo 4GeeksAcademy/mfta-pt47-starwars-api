@@ -7,6 +7,7 @@ from flask import Flask, request, jsonify, url_for
 from flask_migrate import Migrate
 from flask_swagger import swagger
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from utils import APIException, generate_sitemap
 from admin import setup_admin
 from models import db, User, Character, Planet, Character_Favorite, Planet_Favorite, Weight, ClimateEnum, TerrainEnum, WeightUnitEnum, HairColorEnum
@@ -16,6 +17,9 @@ app = Flask(__name__)
 app.url_map.strict_slashes = False
 # Agregado por mi, para que no cambie el orden de las llaves en el json
 app.json.sort_keys = False
+
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY')
+jwt = JWTManager(app)
 
 db_url = os.getenv("DATABASE_URL")
 if db_url is not None:
@@ -45,9 +49,43 @@ def sitemap():
     return generate_sitemap(app)
 
 ##########################################################
-# USERS 
+# USERS
 ##########################################################
-@app.route('/users', methods=['GET']) #-------------------------------------Get Users
+# ---------------------------------------------------------Login User with JWT
+
+
+@app.route('/users/login', methods=['POST'])
+def login_user():
+    """
+    Login a user
+    Example:
+    {
+        "username": "username",
+        "password": "password"
+    }
+    """
+    body = request.get_json()
+
+    if not body:
+        return jsonify({"message": "No input data provided"}), 400
+
+    if 'username' not in body:
+        return jsonify({"message": "Username is required"}), 400
+
+    if 'password' not in body:
+        return jsonify({"message": "Password is required"}), 400
+
+    user = User.query.filter_by(Username=body['username']).first()
+
+    if not user or user.Password != body['password']:
+        return jsonify({"message": "Invalid username or password"}), 401
+
+    access_token = create_access_token(identity=str(user.Id))
+    return jsonify({"token": access_token, "user_id": user.Id}), 200
+
+
+# -------------------------------------------------------------Get Users
+@app.route('/users', methods=['GET'])
 def get_users():
     """
     Get all users
@@ -60,7 +98,8 @@ def get_users():
     return jsonify([user.serialize() for user in users]), 200
 
 
-@app.route('/users/<int:user_id>', methods=['GET']) #------------------------Get User by ID
+# ----------------------------------------------Get User by ID
+@app.route('/users/<int:user_id>', methods=['GET'])
 def get_user(user_id):
     """
     Get a user by id
@@ -73,7 +112,8 @@ def get_user(user_id):
     return jsonify(user.serialize()), 200
 
 
-@app.route('/users', methods=['POST']) #-----------------------------------------------Create User
+# -----------------------------------------------Create User
+@app.route('/users', methods=['POST'])
 def create_user():
     """
     Create a new user
@@ -95,22 +135,21 @@ def create_user():
 
     if 'email' not in body:
         return jsonify({"message": "Email is required"}), 400
-    
+
     if 'password' not in body:
         return jsonify({"message": "Password is required"}), 400
-    
+
     # Check if the username already exists
     if User.query.filter_by(Username=body['username']).first():
         return jsonify({"message": "Username already exists"}), 400
-    
+
     # Check if the email already exists
     if User.query.filter_by(Email=body['email']).first():
         return jsonify({"message": "Email already exists"}), 400
-    
+
     # Check if the password is strong enough
     if len(body['password']) < 8:
         return jsonify({"message": "Password must be at least 8 characters long"}), 400
-
 
     new_user = User(
         Username=body['username'],
@@ -130,7 +169,8 @@ def create_user():
         db.session.close()
 
 
-@app.route('/users/<int:user_id>', methods=['PUT']) #-------------------------------------Update User
+# --------------------------------------------------Update User
+@app.route('/users/<int:user_id>', methods=['PUT'])
 def update_user(user_id):
     """
     Update a user by id
@@ -147,26 +187,26 @@ def update_user(user_id):
 
     if not body:
         return jsonify({"message": "No input data provided"}), 400
-    
+
     user = User.query.get(user_id)
 
     if not user:
         return jsonify({"message": "User not found"}), 404
-    
+
     if 'username' in body:
         # Check if the username is different from the current one
         if body['username'] != user.Username:
             # Check if the username already exists
             if User.query.filter_by(Username=body['username']).first():
                 return jsonify({"message": "Username already exists"}), 400
-            
+
     if 'email' in body:
         # Check if the email is different from the current one
         if body['email'] != user.Email:
             # Check if the email already exists
             if User.query.filter_by(Email=body['email']).first():
                 return jsonify({"message": "Email already exists"}), 400
-            
+
     # To update the password, the user must provide the current password
     if 'password' in body:
         if 'current_password' not in body:
@@ -184,7 +224,7 @@ def update_user(user_id):
     user.Email = body.get('email', user.Email)
     user.Password = body.get('password', user.Password)
     user.IsActive = body.get('is_active', user.IsActive)
-    
+
     try:
         db.session.commit()
         return jsonify(user.serialize()), 200
@@ -193,9 +233,10 @@ def update_user(user_id):
         return jsonify({"message": "Error updating user", "error": str(e)}), 500
     finally:
         db.session.close()
-    
 
-@app.route('/users/<int:user_id>', methods=['DELETE']) #--------------------------------Delete User
+
+# ------------------------------------------------------Delete User
+@app.route('/users/<int:user_id>', methods=['DELETE'])
 def delete_user(user_id):
     """
     Delete a user by id
@@ -216,7 +257,57 @@ def delete_user(user_id):
         db.session.close()
 
 
-@app.route('/users/<int:user_id>/favorites/characters', methods=['POST']) #----------------Add Character to Favorites
+# -------------------------------------------------------Add Character to Favorites without JWT
+# @app.route('/users/<int:user_id>/favorites/characters', methods=['POST'])
+# def add_character_to_favorites(user_id):
+#     """
+#     Add a character to the user's favorites
+#     Example:
+#     {
+#         "character_id": 1
+#     }
+#     """
+#     body = request.get_json()
+
+#     if not body:
+#         return jsonify({"message": "No input data provided"}), 400
+
+#     if 'character_id' not in body:
+#         return jsonify({"message": "Character ID is required"}), 400
+
+#     user = User.query.get(user_id)
+
+#     if not user:
+#         return jsonify({"message": "User not found"}), 404
+
+#     character = Character.query.get(body['character_id'])
+
+#     if not character:
+#         return jsonify({"message": "Character not found"}), 404
+
+#     # Check if the character is already in the user's favorites
+#     if Character_Favorite.query.filter_by(UserId=user.Id, CharacterId=character.Id).first():
+#         return jsonify({"message": "Character already in favorites"}), 400
+
+#     favorite = Character_Favorite(
+#         UserId=user.Id,
+#         CharacterId=character.Id
+#     )
+
+#     try:
+#         db.session.add(favorite)
+#         db.session.commit()
+#         return jsonify(user.serialize()["characters_favorites"]), 201
+#     except Exception as e:
+#         db.session.rollback()
+#         return jsonify({"message": "Error adding character to favorites", "error": str(e)}), 500
+#     finally:
+#         db.session.close()
+
+
+# -------------------------------------------------------Add Character to Favorites with JWT
+@app.route('/users/<int:user_id>/favorites/characters', methods=['POST'])
+@jwt_required()
 def add_character_to_favorites(user_id):
     """
     Add a character to the user's favorites
@@ -225,6 +316,10 @@ def add_character_to_favorites(user_id):
         "character_id": 1
     }
     """
+    current_user_id = get_jwt_identity()
+    if int(current_user_id) != user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
     body = request.get_json()
 
     if not body:
@@ -242,7 +337,7 @@ def add_character_to_favorites(user_id):
 
     if not character:
         return jsonify({"message": "Character not found"}), 404
-    
+
     # Check if the character is already in the user's favorites
     if Character_Favorite.query.filter_by(UserId=user.Id, CharacterId=character.Id).first():
         return jsonify({"message": "Character already in favorites"}), 400
@@ -263,11 +358,17 @@ def add_character_to_favorites(user_id):
         db.session.close()
 
 
-@app.route('/users/<int:user_id>/favorites/characters/<int:character_id>', methods=['DELETE']) #----------------Remove Character from Favorites
+# -------------------------------------------------------Remove Character from Favorites with JWT
+@app.route('/users/<int:user_id>/favorites/characters/<int:character_id>', methods=['DELETE'])
+@jwt_required()
 def remove_character_from_favorites(user_id, character_id):
     """
     Remove a character from the user's favorites
     """
+    current_user_id = get_jwt_identity()
+    if int(current_user_id) != user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
     user = User.query.get(user_id)
 
     if not user:
@@ -295,7 +396,9 @@ def remove_character_from_favorites(user_id, character_id):
         db.session.close()
 
 
-@app.route('/users/<int:user_id>/favorites/planets', methods=['POST']) #----------------Add Planet to Favorites
+# ------------------------------------------------------Add Planet to Favorites
+@app.route('/users/<int:user_id>/favorites/planets', methods=['POST'])
+@jwt_required()
 def add_planet_to_favorites(user_id):
     """
     Add a planet to the user's favorites
@@ -304,6 +407,10 @@ def add_planet_to_favorites(user_id):
         "planet_id": 1
     }
     """
+    current_user_id = get_jwt_identity()
+    if int(current_user_id) != user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
     body = request.get_json()
 
     if not body:
@@ -321,7 +428,7 @@ def add_planet_to_favorites(user_id):
 
     if not planet:
         return jsonify({"message": "Planet not found"}), 404
-    
+
     # Check if the planet is already in the user's favorites
     if Planet_Favorite.query.filter_by(UserId=user.Id, PlanetId=planet.Id).first():
         return jsonify({"message": "Planet already in favorites"}), 400
@@ -342,11 +449,17 @@ def add_planet_to_favorites(user_id):
         db.session.close()
 
 
-@app.route('/users/<int:user_id>/favorites/planets/<int:planet_id>', methods=['DELETE']) #----------------Remove Planet from Favorites
+# -------------------------------------------------------------Remove Planet from Favorites
+@app.route('/users/<int:user_id>/favorites/planets/<int:planet_id>', methods=['DELETE'])
+@jwt_required()
 def remove_planet_from_favorites(user_id, planet_id):
     """
     Remove a planet from the user's favorites
     """
+    current_user_id = get_jwt_identity()
+    if int(current_user_id) != user_id:
+        return jsonify({"message": "Unauthorized"}), 401
+
     user = User.query.get(user_id)
 
     if not user:
@@ -374,11 +487,11 @@ def remove_planet_from_favorites(user_id, planet_id):
         db.session.close()
 
 
-
 ############################################################
 # CHARACTERS
 ############################################################
-@app.route('/characters', methods=['GET']) #-----------------------------------Get Characters
+# ------------------------------------------------------------------------Get Characters
+@app.route('/characters', methods=['GET'])
 def get_characters():
     """
     Get all characters
@@ -391,7 +504,8 @@ def get_characters():
     return jsonify([character.serialize() for character in characters]), 200
 
 
-@app.route('/characters/<int:character_id>', methods=['GET']) #----------------Get Character by ID
+# -----------------------------------------------------------------------Get Character by ID
+@app.route('/characters/<int:character_id>', methods=['GET'])
 def get_character(character_id):
     """
     Get a character by id
@@ -404,7 +518,8 @@ def get_character(character_id):
     return jsonify(character.serialize()), 200
 
 
-@app.route('/characters', methods=['POST']) #----------------------------------Create Character
+# -------------------------------------------------------------------------Create Character
+@app.route('/characters', methods=['POST'])
 def create_character():
     """
     Create a new character
@@ -416,7 +531,7 @@ def create_character():
 
     if 'name' not in body:
         return jsonify({"message": "Name is required"}), 400
-    
+
     # Check if the name already exists
     if Character.query.filter_by(Name=body['name']).first():
         return jsonify({"message": "Name already exists"}), 400
@@ -425,21 +540,22 @@ def create_character():
     if 'hair_color' in body:
         if body['hair_color'] not in HairColorEnum.get_all():
             return jsonify({"message": "Invalid hair color"}), 400
-    
+
     # Check if the height is a valid integer
     if 'height' in body:
         try:
             body['height'] = int(body['height'])
         except ValueError:
             return jsonify({"message": "Height must be an integer"}), 400
-    
+
     # Check if the birth day is a valid date
     if 'birth_day' in body:
         try:
-            body['birth_day'] = datetime.datetime.strptime(body['birth_day'], '%d-%m-%Y').date()
+            body['birth_day'] = datetime.datetime.strptime(
+                body['birth_day'], '%d-%m-%Y').date()
         except ValueError:
             return jsonify({"message": "Birth day must be in DD-MM-YYYY format"}), 400
-    
+
     # Check if the home world id is a valid integer
     if 'home_world_id' in body:
         try:
@@ -451,7 +567,7 @@ def create_character():
         home_world = Planet.query.get(body['home_world_id'])
         if not home_world:
             return jsonify({"message": "Home world not found"}), 404
-    
+
     new_character = Character(
         Name=body['name'],
         Height=body.get('height', None),
@@ -466,14 +582,14 @@ def create_character():
             body['weight'] = float(body['weight'])
         except ValueError:
             return jsonify({"message": "Weight must be a float"}), 400
-        
+
         # Check if the weight unit is valid
         if 'weight_unit' in body:
             if body['weight_unit'] not in WeightUnitEnum.get_all():
                 return jsonify({"message": "Invalid weight unit"}), 400
         else:
             body['weight_unit'] = WeightUnitEnum.KG.value
-        
+
         # Create a new weight object
         new_weight = Weight(
             Weight=body['weight'],
@@ -492,7 +608,8 @@ def create_character():
         db.session.close()
 
 
-@app.route('/characters/<int:character_id>', methods=['PUT']) #--------------------Update Character
+# ---------------------------------------------------------------------Update Character
+@app.route('/characters/<int:character_id>', methods=['PUT'])
 def update_character(character_id):
     """
     Update a character by id
@@ -501,40 +618,41 @@ def update_character(character_id):
 
     if not body:
         return jsonify({"message": "No input data provided"}), 400
-    
+
     character = Character.query.get(character_id)
 
     if not character:
         return jsonify({"message": "Character not found"}), 404
-    
+
     if 'name' in body:
         # Check if the name is different from the current one
         if body['name'] != character.Name:
             # Check if the name already exists
             if Character.query.filter_by(Name=body['name']).first():
                 return jsonify({"message": "Name already exists"}), 400
-            
+
     if 'hair_color' in body:
         # Check if the hair color is different from the current one
         if body['hair_color'] != character.HairColor:
             # Check if the hair color is valid
             if body['hair_color'] not in HairColorEnum.get_all():
                 return jsonify({"message": "Invalid hair color"}), 400
-    
+
     # Check if the height is a valid integer
     if 'height' in body:
         try:
             body['height'] = int(body['height'])
         except ValueError:
             return jsonify({"message": "Height must be an integer"}), 400
-    
+
     # Check if the birth day is a valid date
     if 'birth_day' in body:
         try:
-            body['birth_day'] = datetime.datetime.strptime(body['birth_day'], '%d-%m-%Y').date()
+            body['birth_day'] = datetime.datetime.strptime(
+                body['birth_day'], '%d-%m-%Y').date()
         except ValueError:
             return jsonify({"message": "Birth day must be in DD-MM-YYYY format"}), 400
-    
+
     # Check if the home world id is a valid integer
     if 'home_world_id' in body:
         try:
@@ -552,14 +670,14 @@ def update_character(character_id):
             body['weight'] = float(body['weight'])
         except ValueError:
             return jsonify({"message": "Weight must be a float"}), 400
-        
+
         # Check if the weight unit is valid
         if 'weight_unit' in body:
             if body['weight_unit'] not in WeightUnitEnum.get_all():
                 return jsonify({"message": "Invalid weight unit"}), 400
         else:
             body['weight_unit'] = WeightUnitEnum.KG.value
-        
+
         # Update the weight object
         if character.Weight:
             character.Weight.Weight = body['weight']
@@ -588,7 +706,8 @@ def update_character(character_id):
         db.session.close()
 
 
-@app.route('/characters/<int:character_id>', methods=['DELETE']) #--------------Delete Character
+# --------------------------------------------------------------Delete Character
+@app.route('/characters/<int:character_id>', methods=['DELETE'])
 def delete_character(character_id):
     """
     Delete a character by id
@@ -609,11 +728,11 @@ def delete_character(character_id):
         db.session.close()
 
 
-
 ############################################################
 # PLANETS
 ############################################################
-@app.route('/planets', methods=['GET']) #----------------------------------------Get Planets
+# -----------------------------------------------------------------Get Planets
+@app.route('/planets', methods=['GET'])
 def get_planets():
     """
     Get all planets
@@ -626,7 +745,8 @@ def get_planets():
     return jsonify([planet.serialize() for planet in planets]), 200
 
 
-@app.route('/planets/<int:planet_id>', methods=['GET']) #------------------------Get Planet by ID
+# --------------------------------------------------------------Get Planet by ID
+@app.route('/planets/<int:planet_id>', methods=['GET'])
 def get_planet(planet_id):
     """
     Get a planet by id
@@ -639,7 +759,8 @@ def get_planet(planet_id):
     return jsonify(planet.serialize()), 200
 
 
-@app.route('/planets', methods=['POST']) #---------------------------------------Create Planet
+# -----------------------------------------------------------Create Planet
+@app.route('/planets', methods=['POST'])
 def create_planet():
     """
     Create a new planet
@@ -651,16 +772,16 @@ def create_planet():
 
     if 'name' not in body:
         return jsonify({"message": "Name is required"}), 400
-    
+
     # Check if the name already exists
     if Planet.query.filter_by(Name=body['name']).first():
         return jsonify({"message": "Name already exists"}), 400
-    
+
     # Check if the climate is valid
     if 'climate' in body:
         if body['climate'] not in ClimateEnum.get_all():
             return jsonify({"message": "Invalid climate"}), 400
-        
+
     # Check if the terrain is valid
     if 'terrain' in body:
         if body['terrain'] not in TerrainEnum.get_all():
@@ -683,7 +804,8 @@ def create_planet():
         db.session.close()
 
 
-@app.route('/planets/<int:planet_id>', methods=['PUT']) #---------------------------Update Planet
+# ------------------------------------------------------------Update Planet
+@app.route('/planets/<int:planet_id>', methods=['PUT'])
 def update_planet(planet_id):
     """
     Update a planet by id
@@ -692,26 +814,26 @@ def update_planet(planet_id):
 
     if not body:
         return jsonify({"message": "No input data provided"}), 400
-    
+
     planet = Planet.query.get(planet_id)
 
     if not planet:
         return jsonify({"message": "Planet not found"}), 404
-    
+
     if 'name' in body:
         # Check if the name is different from the current one
         if body['name'] != planet.Name:
             # Check if the name already exists
             if Planet.query.filter_by(Name=body['name']).first():
                 return jsonify({"message": "Name already exists"}), 400
-            
+
     if 'climate' in body:
         # Check if the climate is different from the current one
         if body['climate'] != planet.Climate.value:
             # Check if the climate is valid
             if body['climate'] not in ClimateEnum.get_all():
                 return jsonify({"message": "Invalid climate"}), 400
-    
+
     if 'terrain' in body:
         # Check if the terrain is different from the current one
         if body['terrain'] != planet.Terrain.value:
@@ -734,7 +856,8 @@ def update_planet(planet_id):
         db.session.close()
 
 
-@app.route('/planets/<int:planet_id>', methods=['DELETE']) #------------------------------Delete Planet
+# ------------------------------------------------------------Delete Planet
+@app.route('/planets/<int:planet_id>', methods=['DELETE'])
 def delete_planet(planet_id):
     """
     Delete a planet by id
@@ -753,10 +876,6 @@ def delete_planet(planet_id):
         return jsonify({"message": "Error deleting planet", "error": str(e)}), 500
     finally:
         db.session.close()
-
-
-
-
 
 
 # this only runs if `$ python src/app.py` is executed
